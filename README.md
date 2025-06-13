@@ -1,4 +1,4 @@
-# **QUBO Model: Optimized Warehouse-to-Customer Assignment**
+# **QUBO Model: Optimized Warehouse-to-Customer**
 
 ## Contents of `QUBO_model` Folder
 
