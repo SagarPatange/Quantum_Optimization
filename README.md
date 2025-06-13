@@ -1,7 +1,5 @@
 # **QUBO Model: Optimized Warehouse-to-Customer**
 
-## Contents of `QUBO_model` Folder
-
 ### **1. Overview**
 This Quadratic Unconstrained Binary Optimization (QUBO) model is designed to optimize **warehouse-to-customer assignments** by minimizing transportation costs while ensuring that each customer is assigned to exactly one warehouse. The model incorporates **biasing** to prefer certain warehouse assignments and visualizes the optimized solution in a **distance-scaled network graph**.
 
@@ -15,10 +13,10 @@ $$
 $$
 
 Where:
-- $ W $ = total number of warehouses  
-- $ C $ = total number of customers  
-- $ d_{w,c} $ = distance between warehouse $ w $ and customer $ c $  
-- $ y_{w,c} $ is a **binary variable** that equals **1** if warehouse $ w $ serves customer $ c $, otherwise it is **0**.
+- $W$ = total number of warehouses  
+- $C$ = total number of customers  
+- $d_{w,c}$ = distance between warehouse $w$ and customer $c$  
+- $y_{w,c}$ is a **binary variable** that equals **1** if warehouse $w$ serves customer $c$, otherwise it is **0**.
 
 The **solver aims to minimize this function**, which means it finds assignments that reduce the overall transportation cost.
 
@@ -31,7 +29,7 @@ $$
 \sum_{w=0}^{W-1} y_{w,c} = 1, \quad \forall c \in C
 $$
 
-This means that for each customer $ c $, the sum of all warehouse assignments must equal **1** (the customer cannot be left unassigned or assigned to multiple warehouses).  
+This means that for each customer $c$, the sum of all warehouse assignments must equal **1** (the customer cannot be left unassigned or assigned to multiple warehouses).  
 
 To enforce this constraint in the QUBO model, we use a **quadratic penalty function**:
 
@@ -46,29 +44,29 @@ P \sum_{w=0}^{W-1} y_{w,c}^2 - 2P \sum_{w=0}^{W-1} y_{w,c} + P
 $$
 
 Which is implemented in the model using:
-- **Linear terms**: $ -2P \cdot y_{w,c} $  
-- **Quadratic terms**: $ +2P \cdot y_{w1,c} \cdot y_{w2,c} $ for all warehouse pairs $ w1 \neq w2 $  
-- **Offset term**: $ +P $, added once per customer  
+- **Linear terms**: $-2P \cdot y_{w,c}$  
+- **Quadratic terms**: $+2P \cdot y_{w1,c} \cdot y_{w2,c}$ for all warehouse pairs $w1 \neq w2$  
+- **Offset term**: $+P$, added once per customer  
 
 This ensures that if a customer is assigned **more than one warehouse**, the penalty increases significantly, discouraging invalid assignments.
 
 ---
 
 ### **4. Bias Term: Preferential Warehouse Assignment**
-To **bias** the assignment process towards a particular warehouse (e.g., `Warehouse #0`), a **negative linear term** is added for all $ y_{0,c} $ variables:
+To **bias** the assignment process towards a particular warehouse (e.g., `Warehouse #0`), a **negative linear term** is added for all $y_{0,c}$ variables:
 
 $$
 B \sum_{c=0}^{C-1} y_{0,c}
 $$
 
-Where $ B $ is a negative bias value (e.g., $ B = -5 $). This **reduces the cost of assigning customers to Warehouse #0**, making it more likely to be selected when the solver optimizes the assignments.
+Where $B$ is a negative bias value (e.g., $B = -5$). This **reduces the cost of assigning customers to Warehouse #0**, making it more likely to be selected when the solver optimizes the assignments.
 
 ---
 
 ### **5. Solving the QUBO Model**
 The QUBO model is solved using **Simulated Annealing**, a probabilistic optimization algorithm designed for combinatorial problems. It iteratively refines candidate solutions to find a configuration that minimizes the total cost while satisfying constraints.
 
-The solver produces a **binary assignment matrix**, where each $ y_{w,c} = 1 $ indicates an active warehouse-to-customer assignment.
+The solver produces a **binary assignment matrix**, where each $y_{w,c} = 1$ indicates an active warehouse-to-customer assignment.
 
 ---
 
@@ -104,6 +102,9 @@ This provides an **intuitive spatial representation** of warehouse-customer rela
 
 This QUBO model provides a **strong foundation** for solving warehouse allocation problems and can be extended for larger, real-world supply chain applications. 
 
+## Contents of `QUBO_model` Folder
+
+Contains the code to the model which is described above
 
 ## Contents of `data` Folder
 
@@ -116,3 +117,5 @@ Once the model is further developed, it will have several important components w
 ## Contents of `utils` Folder
 
 Contains extraneous files which are needed for various operations in this project
+
+
