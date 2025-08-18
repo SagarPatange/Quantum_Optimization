@@ -1,0 +1,62 @@
+ERR: None None 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None None 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None None 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 8.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 8.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 8.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 12.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 12.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 12.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 20.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 20.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: None 20.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 None 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 None 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 None 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 8.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 8.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 8.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 12.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 12.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 12.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 20.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 20.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 4.0 20.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 None 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 None 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 None 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 8.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 8.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 8.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 12.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 12.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 12.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 20.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 20.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 8.0 20.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 None 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 None 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 None 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 8.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 8.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 8.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 12.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 12.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 12.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 20.0 10.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 20.0 25.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+ERR: 12.0 20.0 50.0 build_qubo() got an unexpected keyword argument 'normalize_objective'
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/abdur-rahmanibn-bilalwaajid/Desktop/Quantum_Optimization/python_scripts/sweep_qubo.py", line 65, in <module>
+    main()
+  File "/Users/abdur-rahmanibn-bilalwaajid/Desktop/Quantum_Optimization/python_scripts/sweep_qubo.py", line 56, in main
+    df = pd.DataFrame(results).sort_values(["feasible", "cost"], ascending=[False, True])
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abdur-rahmanibn-bilalwaajid/miniconda3/lib/python3.12/site-packages/pandas/core/frame.py", line 7172, in sort_values
+    keys = [self._get_label_or_level_values(x, axis=axis) for x in by]
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/abdur-rahmanibn-bilalwaajid/miniconda3/lib/python3.12/site-packages/pandas/core/generic.py", line 1911, in _get_label_or_level_values
+    raise KeyError(key)
+KeyError: 'feasible'

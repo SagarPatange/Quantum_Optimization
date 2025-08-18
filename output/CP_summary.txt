@@ -1,0 +1,6 @@
+Method: CP-SAT
+Status: Optimal
+Feasible: True
+Objective(total_cost): 20494.199000
+Total_distance_metric: 20494.198851
+Runtime_sec: 0.474

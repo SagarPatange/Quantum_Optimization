@@ -1,0 +1,2 @@
+method,feasible,total_cost,total_distance,runtime_sec
+QUBO+SA,False,17774456.145119347,17774456.145119347,544.2287878990173

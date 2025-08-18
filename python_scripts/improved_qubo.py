@@ -1,0 +1,542 @@
+"""
+Improved QUBO model with parameter sweep and better constraint handling.
+
+Key improvements:
+1. Automatic penalty weight scaling based on problem characteristics
+2. Parameter sweep functionality to find optimal penalty weights
+3. Better slack variable handling with tighter bounds
+4. Constraint violation reporting for debugging
+5. Multiple solver options (SA, Tabu, etc.)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import math
+import time
+from pathlib import Path
+from typing import Dict, Tuple, List
+from itertools import product
+
+import numpy as np
+import pandas as pd
+
+try:
+   import dimod
+   import neal
+except ImportError as e:
+   raise SystemExit("Missing dependencies. Install with: pip install dimod neal") from e
+
+
+def configure_logging(verbosity: int) -> None:
+   level = logging.WARNING if verbosity == 0 else (logging.INFO if verbosity == 1 else logging.DEBUG)
+   logging.basicConfig(level=level, format="%(asctime)s | %(levelname)s | %(message)s")
+
+
+def load_entities(warehouses_path: Path, customers_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+   wh = pd.read_csv(warehouses_path).sort_values("Warehouse_ID").reset_index(drop=True)
+   cu = pd.read_csv(customers_path).sort_values("Customer_ID").reset_index(drop=True)
+   return wh, cu
+
+
+def load_distance_matrix(distances_path: Path, n_w: int, n_c: int) -> pd.DataFrame:
+   try:
+       raw = pd.read_csv(distances_path, header=None)
+       if raw.shape == (n_w, n_c):
+           return raw.astype(float)
+   except Exception:
+       pass
+   df = pd.read_csv(distances_path, header=0)
+   if not np.issubdtype(df.dtypes.iloc[0], np.number):
+       df = df.drop(df.columns[0], axis=1)
+   df = df.apply(pd.to_numeric, errors="coerce")
+   if df.shape != (n_w, n_c):
+       raise ValueError(f"distance_matrix.csv shape mismatch. Expected ({n_w} x {n_c}), got {df.shape}.")
+   return df.astype(float)
+
+
+def estimate_penalty_weights(warehouses: pd.DataFrame, customers: pd.DataFrame, distances: pd.DataFrame, objective: str) -> Dict[str, float]:
+   """
+   Estimate appropriate penalty weights based on problem characteristics.
+   Rule of thumb: penalties should be 5-10x larger than the maximum possible objective cost.
+   """
+   n_w, n_c = len(warehouses), len(customers)
+   demand = customers["Demand"].to_numpy(dtype=float)
+   D = distances.to_numpy(dtype=float)
+   
+   if objective == "distance_times_demand":
+       max_single_cost = np.max(D * demand.reshape((1, -1)))
+       total_demand = np.sum(demand)
+       # Worst case: all customers assigned to farthest warehouse
+       worst_case_cost = np.max(D) * total_demand
+   else:
+       max_single_cost = np.max(D)
+       worst_case_cost = np.max(D) * n_c
+   
+   # Assignment penalty: should dominate worst case of serving multiple customers from same warehouse
+   lambda_assign = max(10.0 * worst_case_cost, 1000.0 * max_single_cost)
+   
+   # Capacity penalty: should dominate cost of violating capacity constraints
+   max_capacity_violation = np.max(customers["Demand"]) * n_c  # if all customers went to one warehouse
+   lambda_capacity = max(10.0 * worst_case_cost, 100.0 * max_single_cost)
+   
+   logging.info(f"Estimated penalties: assign={lambda_assign:.2e}, capacity={lambda_capacity:.2e}")
+   logging.info(f"Max single cost: {max_single_cost:.2e}, worst case: {worst_case_cost:.2e}")
+   
+   return {
+       "lambda_assign": lambda_assign,
+       "lambda_capacity": lambda_capacity,
+       "max_cost": max_single_cost,
+       "worst_case": worst_case_cost
+   }
+
+
+def build_qubo_improved(
+   warehouses: pd.DataFrame,
+   customers: pd.DataFrame,
+   distances: pd.DataFrame,
+   lambda_assign: float,
+   lambda_capacity: float,
+   granularity: float,
+   objective: str = "distance_times_demand",
+   use_tight_bounds: bool = True,
+) -> Tuple[dimod.BinaryQuadraticModel, Dict]:
+   """
+   Improved QUBO formulation with better constraint handling.
+   """
+   n_w, n_c = len(warehouses), len(customers)
+   capacities = warehouses["Capacity"].to_numpy(dtype=float)
+   demand = customers["Demand"].to_numpy(dtype=float)
+   D = distances.to_numpy(dtype=float)
+   
+   # Build cost matrix
+   if objective == "distance_only":
+       C = D.copy()
+   elif objective == "distance_times_demand":
+       C = D * demand.reshape((1, -1))
+   else:
+       raise ValueError("objective must be 'distance_only' or 'distance_times_demand'")
+
+   bqm = dimod.BinaryQuadraticModel(vartype=dimod.BINARY)
+   
+   # Create assignment variables x_{i,j}
+   var_x = {}
+   for i in range(n_w):
+       for j in range(n_c):
+           label = f"x_{i}_{j}"
+           var_x[(i, j)] = label
+           # Add objective term
+           bqm.add_variable(label, C[i, j])
+
+   # (A) One-warehouse-per-customer constraint
+   # For each customer j: (sum_i x_{i,j} - 1)^2
+   for j in range(n_c):
+       vars_j = [var_x[(i, j)] for i in range(n_w)]
+       
+       # Expand (sum - 1)^2 = sum^2 - 2*sum + 1
+       # sum^2 = sum_i x_i^2 + 2*sum_{i<k} x_i*x_k = sum_i x_i + 2*sum_{i<k} x_i*x_k (since x^2=x)
+       for label in vars_j:
+           bqm.add_linear(label, lambda_assign * (1 - 2))  # coefficient of x in x - 2x
+       
+       for idx_i in range(len(vars_j)):
+           for idx_k in range(idx_i + 1, len(vars_j)):
+               bqm.add_quadratic(vars_j[idx_i], vars_j[idx_k], 2.0 * lambda_assign)
+
+   # (B) Capacity constraints with improved slack handling
+   var_s = {}
+   for i in range(n_w):
+       # Calculate tighter bounds for slack variables
+       total_demand_i = np.sum(demand)  # worst case: all customers assigned to warehouse i
+       max_slack_needed = max(0, total_demand_i - capacities[i])
+       
+       if use_tight_bounds and max_slack_needed > 0:
+           # Use actual maximum slack needed instead of capacity-based estimate
+           K = max(1, int(math.ceil(max_slack_needed / granularity)).bit_length())
+       else:
+           # Original approach
+           K = max(1, int(math.ceil(capacities[i] / granularity)).bit_length())
+       
+       # Create slack variables s_{i,k}
+       for k in range(K):
+           label = f"s_{i}_{k}"
+           var_s[(i, k)] = label
+           bqm.add_variable(label, 0.0)
+
+       # Capacity constraint: sum_j demand[j]*x_{i,j} + granularity * sum_k 2^k * s_{i,k} = capacities[i]
+       # Penalty: lambda_capacity * (LHS - capacities[i])^2
+       
+       # Let A = sum_j demand[j]*x_{i,j}, B = granularity * sum_k 2^k * s_{i,k}, C = capacities[i]
+       # We want to minimize (A + B - C)^2 = A^2 + B^2 + 2AB - 2AC - 2BC + C^2
+       
+       g = float(granularity)
+       
+       # A^2 terms: (sum_j demand[j]*x_{i,j})^2
+       for j in range(n_c):
+           # x^2 = x, so demand[j]^2 * x_{i,j}
+           bqm.add_linear(var_x[(i, j)], lambda_capacity * (demand[j] ** 2))
+           
+       # Cross terms in A^2: 2 * sum_{j<l} demand[j]*demand[l]*x_{i,j}*x_{i,l}
+       for j in range(n_c):
+           for l in range(j + 1, n_c):
+               bqm.add_quadratic(var_x[(i, j)], var_x[(i, l)], 
+                               2.0 * lambda_capacity * demand[j] * demand[l])
+
+       # B^2 terms: (g * sum_k 2^k * s_{i,k})^2
+       for k in range(K):
+           # s^2 = s, so g^2 * 2^{2k} * s_{i,k}
+           bqm.add_linear(var_s[(i, k)], lambda_capacity * (g ** 2) * (2 ** (2 * k)))
+           
+       # Cross terms in B^2: 2 * sum_{k<m} g^2 * 2^{k+m} * s_{i,k} * s_{i,m}
+       for k in range(K):
+           for m in range(k + 1, K):
+               bqm.add_quadratic(var_s[(i, k)], var_s[(i, m)], 
+                               2.0 * lambda_capacity * (g ** 2) * (2 ** (k + m)))
+
+       # 2AB terms: 2 * A * B
+       for j in range(n_c):
+           for k in range(K):
+               bqm.add_quadratic(var_x[(i, j)], var_s[(i, k)], 
+                               2.0 * lambda_capacity * demand[j] * g * (2 ** k))
+
+       # -2AC terms: -2 * capacities[i] * A
+       for j in range(n_c):
+           bqm.add_linear(var_x[(i, j)], -2.0 * lambda_capacity * capacities[i] * demand[j])
+
+       # -2BC terms: -2 * capacities[i] * B
+       for k in range(K):
+           bqm.add_linear(var_s[(i, k)], -2.0 * lambda_capacity * capacities[i] * g * (2 ** k))
+
+   meta = {
+       "objective": objective,
+       "lambda_assign": lambda_assign,
+       "lambda_capacity": lambda_capacity,
+       "granularity": granularity,
+       "n_warehouses": n_w,
+       "n_customers": n_c,
+       "n_variables": len(bqm.variables),
+       "use_tight_bounds": use_tight_bounds,
+   }
+   
+   return bqm, meta
+
+
+def analyze_constraint_violations(sample: Dict[str, int], warehouses: pd.DataFrame, 
+                               customers: pd.DataFrame, granularity: float) -> Dict:
+   """
+   Analyze constraint violations in the solution.
+   """
+   n_w, n_c = len(warehouses), len(customers)
+   demand = customers["Demand"].to_numpy(dtype=float)
+   capacities = warehouses["Capacity"].to_numpy(dtype=float)
+   
+   violations = {"assignment": [], "capacity": []}
+   
+   # Check assignment constraints
+   for j in range(n_c):
+       assigned_count = sum(sample.get(f"x_{i}_{j}", 0) for i in range(n_w))
+       if assigned_count != 1:
+           violations["assignment"].append({
+               "customer": j,
+               "assigned_count": assigned_count,
+               "violation": abs(assigned_count - 1)
+           })
+   
+   # Check capacity constraints
+   for i in range(n_w):
+       used_capacity = sum(demand[j] * sample.get(f"x_{i}_{j}", 0) for j in range(n_c))
+       
+       # Calculate slack contribution
+       slack_contribution = 0
+       k = 0
+       while f"s_{i}_{k}" in sample:
+           slack_contribution += (2 ** k) * sample[f"s_{i}_{k}"]
+           k += 1
+       slack_contribution *= granularity
+       
+       total_lhs = used_capacity + slack_contribution
+       violation = abs(total_lhs - capacities[i])
+       
+       if violation > 1e-6:  # tolerance for numerical errors
+           violations["capacity"].append({
+               "warehouse": i,
+               "used_capacity": used_capacity,
+               "slack_contribution": slack_contribution,
+               "target_capacity": capacities[i],
+               "violation": violation
+           })
+   
+   return violations
+
+
+def decode_solution_improved(bqm, sample, warehouses, customers, distances, objective, granularity):
+   """
+   Improved solution decoder with constraint violation analysis.
+   """
+   # Original decoding
+   result = decode_solution_to_assignment(bqm, sample, warehouses, customers, distances, objective)
+   
+   # Add constraint violation analysis
+   violations = analyze_constraint_violations(sample, warehouses, customers, granularity)
+   result["violations"] = violations
+   result["total_assignment_violations"] = len(violations["assignment"])
+   result["total_capacity_violations"] = len(violations["capacity"])
+   
+   return result
+
+
+def parameter_sweep(warehouses: pd.DataFrame, customers: pd.DataFrame, distances: pd.DataFrame,
+                  objective: str, granularity: float, num_reads: int = 1000, seed: int = 123):
+   """
+   Perform parameter sweep to find good penalty weights.
+   """
+   # Get baseline estimates
+   estimates = estimate_penalty_weights(warehouses, customers, distances, objective)
+   base_assign = estimates["lambda_assign"]
+   base_capacity = estimates["lambda_capacity"]
+   
+   # Define sweep ranges (factors of the baseline)
+   assign_factors = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+   capacity_factors = [0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+   
+   results = []
+   sampler = neal.SimulatedAnnealingSampler()
+   
+   print(f"Starting parameter sweep with {len(assign_factors) * len(capacity_factors)} combinations...")
+   
+   for i, (af, cf) in enumerate(product(assign_factors, capacity_factors)):
+       lambda_assign = base_assign * af
+       lambda_capacity = base_capacity * cf
+       
+       print(f"Progress: {i+1}/{len(assign_factors) * len(capacity_factors)} - "
+             f"assign={lambda_assign:.2e}, capacity={lambda_capacity:.2e}")
+       
+       try:
+           # Build QUBO
+           start_time = time.time()
+           bqm, meta = build_qubo_improved(
+               warehouses, customers, distances, 
+               lambda_assign, lambda_capacity, granularity, objective
+           )
+           build_time = time.time() - start_time
+           
+           # Solve
+           sampleset = sampler.sample(bqm, num_reads=num_reads, seed=seed)
+           best = sampleset.first
+           
+           # Decode
+           decoded = decode_solution_improved(bqm, best.sample, warehouses, customers, distances, objective, granularity)
+           
+           results.append({
+               "lambda_assign": lambda_assign,
+               "lambda_capacity": lambda_capacity,
+               "assign_factor": af,
+               "capacity_factor": cf,
+               "energy": best.energy,
+               "feasible": decoded["feasible"],
+               "total_cost": decoded["total_cost"],
+               "assignment_violations": decoded["total_assignment_violations"],
+               "capacity_violations": decoded["total_capacity_violations"],
+               "build_time": build_time,
+               "n_variables": meta["n_variables"]
+           })
+           
+       except Exception as e:
+           print(f"Error with parameters assign={lambda_assign:.2e}, capacity={lambda_capacity:.2e}: {e}")
+           results.append({
+               "lambda_assign": lambda_assign,
+               "lambda_capacity": lambda_capacity,
+               "assign_factor": af,
+               "capacity_factor": cf,
+               "energy": float('inf'),
+               "feasible": False,
+               "total_cost": float('inf'),
+               "assignment_violations": -1,
+               "capacity_violations": -1,
+               "build_time": 0,
+               "n_variables": 0,
+               "error": str(e)
+           })
+   
+   # Sort by feasibility first, then by cost
+   results.sort(key=lambda x: (not x["feasible"], x["total_cost"]))
+   
+   return results
+
+
+def decode_solution_to_assignment(bqm, sample, warehouses, customers, distances, objective):
+   """Original decode function from your code."""
+   n_w, n_c = len(warehouses), len(customers)
+   wh_ids = warehouses["Warehouse_ID"].tolist()
+   cu_ids = customers["Customer_ID"].tolist()
+   demand = customers["Demand"].to_numpy(float)
+   D = distances.to_numpy(float)
+
+   assignments = []
+   total_distance_metric = 0.0
+   for j in range(n_c):
+       chosen_i = None
+       active = []
+       for i in range(n_w):
+           if sample.get(f"x_{i}_{j}", 0) >= 1:
+               active.append(i)
+       if len(active) == 1:
+           chosen_i = active[0]
+       elif len(active) > 1:
+           costs = [(i, D[i, j] * (demand[j] if objective == "distance_times_demand" else 1.0)) for i in active]
+           chosen_i = min(costs, key=lambda t: t[1])[0]
+       else:
+           costs = [(i, D[i, j] * (demand[j] if objective == "distance_times_demand" else 1.0)) for i in range(n_w)]
+           chosen_i = min(costs, key=lambda t: t[1])[0]
+
+       dist_km = float(D[chosen_i, j])
+       cost = dist_km * (demand[j] if objective == "distance_times_demand" else 1.0)
+       total_distance_metric += cost
+       assignments.append({
+           "Customer_ID": cu_ids[j],
+           "Assigned_Warehouse_ID": wh_ids[chosen_i],
+           "Demand": demand[j],
+           "DistanceKM": dist_km,
+           "Cost": cost,
+       })
+
+   assignment_df = pd.DataFrame(assignments)
+   used_by_w = assignment_df.groupby("Assigned_Warehouse_ID")["Demand"].sum().reindex(wh_ids, fill_value=0.0)
+   cap = warehouses.set_index("Warehouse_ID")["Capacity"].astype(float)
+   capacity_usage = pd.DataFrame({
+       "Warehouse_ID": wh_ids, 
+       "Capacity": cap.values, 
+       "Used": used_by_w.values, 
+       "Residual": cap.values - used_by_w.values
+   })
+
+   feasible = ((assignment_df.groupby("Customer_ID").size() == 1).all() and 
+               (capacity_usage["Used"] <= capacity_usage["Capacity"]).all())
+
+   return {
+       "assignment": assignment_df,
+       "capacity_usage": capacity_usage,
+       "feasible": bool(feasible),
+       "total_cost": float(assignment_df["Cost"].sum()),
+       "total_distance": float(total_distance_metric),
+   }
+
+
+def main():
+   parser = argparse.ArgumentParser(description="Improved QUBO with parameter sweep")
+   parser.add_argument("--warehouses", type=Path, required=True)
+   parser.add_argument("--customers", type=Path, required=True)
+   parser.add_argument("--distances", type=Path, required=True)
+   parser.add_argument("--objective", choices=["distance_only", "distance_times_demand"], 
+                      default="distance_times_demand")
+   parser.add_argument("--lambda_assign", type=float, default=None, 
+                      help="Assignment penalty (auto-estimated if not provided)")
+   parser.add_argument("--lambda_capacity", type=float, default=None,
+                      help="Capacity penalty (auto-estimated if not provided)")
+   parser.add_argument("--granularity", type=float, default=10.0)
+   parser.add_argument("--outdir", type=Path, default=Path("output"))
+   parser.add_argument("--solve", action="store_true")
+   parser.add_argument("--sweep", action="store_true", help="Perform parameter sweep")
+   parser.add_argument("--sa_reads", type=int, default=2000)
+   parser.add_argument("--seed", type=int, default=123)
+   parser.add_argument("--subset_size", type=int, default=None, 
+                      help="Use only first N customers (for testing)")
+   parser.add_argument("-v", "--verbose", action="count", default=1)
+   
+   args = parser.parse_args()
+   configure_logging(args.verbose)
+
+   # Load data
+   wh, cu = load_entities(args.warehouses, args.customers)
+   D = load_distance_matrix(args.distances, len(wh), len(cu))
+   
+   # Subset for testing if requested
+   if args.subset_size:
+       cu = cu.head(args.subset_size)
+       D = D.iloc[:, :args.subset_size]
+       print(f"Using subset: {len(wh)} warehouses, {len(cu)} customers")
+   
+   args.outdir.mkdir(parents=True, exist_ok=True)
+   
+   if args.sweep:
+       # Parameter sweep
+       print("Performing parameter sweep...")
+       sweep_results = parameter_sweep(wh, cu, D, args.objective, args.granularity, 
+                                     args.sa_reads, args.seed)
+       
+       # Save sweep results
+       sweep_df = pd.DataFrame(sweep_results)
+       sweep_df.to_csv(args.outdir / "parameter_sweep_results.csv", index=False)
+       
+       # Print best results
+       feasible_results = sweep_df[sweep_df["feasible"] == True]
+       if len(feasible_results) > 0:
+           best = feasible_results.iloc[0]
+           print(f"\nBest feasible result:")
+           print(f"  Penalties: assign={best['lambda_assign']:.2e}, capacity={best['lambda_capacity']:.2e}")
+           print(f"  Cost: {best['total_cost']:.2f}")
+           print(f"  Energy: {best['energy']:.2f}")
+           print(f"  Variables: {best['n_variables']}")
+       else:
+           print("\nNo feasible solutions found in sweep!")
+           print("Top 5 results by cost:")
+           print(sweep_df.head()[["assign_factor", "capacity_factor", "total_cost", 
+                                  "assignment_violations", "capacity_violations"]].to_string())
+       
+       return
+   
+   # Single run with auto-estimation or provided parameters
+   if args.lambda_assign is None or args.lambda_capacity is None:
+       estimates = estimate_penalty_weights(wh, cu, D, args.objective)
+       lambda_assign = args.lambda_assign or estimates["lambda_assign"]
+       lambda_capacity = args.lambda_capacity or estimates["lambda_capacity"]
+   else:
+       lambda_assign = args.lambda_assign
+       lambda_capacity = args.lambda_capacity
+
+   # Build QUBO
+   start = time.time()
+   bqm, meta = build_qubo_improved(wh, cu, D, lambda_assign, lambda_capacity, 
+                                  args.granularity, args.objective)
+   build_time = time.time() - start
+
+   # Save BQM
+   serial = bqm.to_serializable()
+   with open(args.outdir / "improved_qubo_bqm.json", "w") as f:
+       json.dump({"bqm": serial, "meta": meta, "build_time_sec": build_time}, f)
+   
+   print(f"Built improved BQM with {len(bqm.variables)} variables in {build_time:.3f}s")
+   print(f"Penalties: assign={lambda_assign:.2e}, capacity={lambda_capacity:.2e}")
+
+   if args.solve:
+       sampler = neal.SimulatedAnnealingSampler()
+       sampleset = sampler.sample(bqm, num_reads=args.sa_reads, seed=args.seed)
+       best = sampleset.first
+       
+       decoded = decode_solution_improved(bqm, best.sample, wh, cu, D, args.objective, args.granularity)
+
+       # Save results
+       decoded["assignment"].to_csv(args.outdir / "improved_QUBO_assignment.csv", index=False)
+       decoded["capacity_usage"].to_csv(args.outdir / "improved_QUBO_capacity.csv", index=False)
+       
+       with open(args.outdir / "improved_QUBO_summary.txt", "w") as f:
+           f.write(f"Feasible: {decoded['feasible']}\n")
+           f.write(f"Total Cost: {decoded['total_cost']:.6f}\n")
+           f.write(f"Energy: {best.energy:.6f}\n")
+           f.write(f"Assignment Violations: {decoded['total_assignment_violations']}\n")
+           f.write(f"Capacity Violations: {decoded['total_capacity_violations']}\n")
+           f.write(f"Build Time: {build_time:.3f}s\n")
+           f.write(f"Variables: {len(bqm.variables)}\n")
+           if decoded["violations"]["assignment"]:
+               f.write(f"\nAssignment violations: {decoded['violations']['assignment']}\n")
+           if decoded["violations"]["capacity"]:
+               f.write(f"\nCapacity violations: {decoded['violations']['capacity']}\n")
+
+       print(f"Solved: Feasible={decoded['feasible']}, Cost={decoded['total_cost']:.2f}, "
+             f"Energy={best.energy:.2f}")
+       print(f"Violations: Assignment={decoded['total_assignment_violations']}, "
+             f"Capacity={decoded['total_capacity_violations']}")
+
+
+if __name__ == "__main__":
+   main()

@@ -1,0 +1,6 @@
+Method: LP
+Status: Optimal
+Feasible: True
+Objective(total_cost): 12356802.513398
+Total_distance_metric: 12356802.513398
+Runtime_sec: 2.909

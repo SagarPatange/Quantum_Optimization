@@ -1,0 +1,5 @@
+Feasible(heuristic check): False
+TotalCost: 20258282.518937
+TotalDistanceMetric: 20258282.518937
+Energy(best): -4781085699.827148
+BuildTime_sec: 0.835
